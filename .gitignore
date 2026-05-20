@@ -7,6 +7,9 @@ Chart.lock
 charts/*.tgz
 charts/*.tar.gz
 
+# Vendored subchart dependencies (committed so Ryvn's helm package can resolve them)
+!charts/daytona/charts/*.tgz
+
 # Helm test files
 tests/*.yaml
 tests/*.yml
