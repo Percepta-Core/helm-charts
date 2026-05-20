@@ -1,5 +1,5 @@
 apiVersion: v2
-name: daytona
+name: forked-daytona
 description: A Helm chart for Daytona - Secure Infrastructure for Running AI Code
 type: application
 version: 0.0.24
