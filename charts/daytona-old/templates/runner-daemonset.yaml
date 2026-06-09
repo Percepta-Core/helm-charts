@@ -237,7 +237,7 @@ spec:
               {{- else }}
               # Function to install Docker and XFS tools (online mode)
               install_docker() {
-                if command -v docker >/dev/null 2>&1; then
+                if command -v docker >/dev/null 2>&1 && [ -x /usr/bin/dockerd ]; then
                   echo "Docker is already installed"
                   docker version
                   
@@ -272,7 +272,7 @@ spec:
                   # Install with --force-depends to skip the containerd.io dependency
                   dpkg --force-depends -i docker-ce-cli_${DOCKER_VERSION}_amd64.deb
                   dpkg --force-depends -i docker-ce_${DOCKER_VERSION}_amd64.deb
-
+                  
                   # AKS compatibility: AKS nodes ship moby-containerd which has a hard
                   # apt-package conflict with docker-ce, so dpkg refuses to install the
                   # daemon (CLI installs fine, daemon does not). If dockerd is missing
@@ -289,7 +289,7 @@ spec:
                     getent group docker >/dev/null 2>&1 || groupadd docker
                     printf '%s\n' '[Unit]' 'Description=Docker Application Container Engine' 'After=network-online.target' 'Wants=network-online.target' '' '[Service]' 'Type=notify' 'ExecStart=/usr/bin/dockerd' 'ExecReload=/bin/kill -s HUP $MAINPID' 'Restart=always' 'RestartSec=2' 'LimitNOFILE=infinity' 'LimitNPROC=infinity' 'LimitCORE=infinity' 'Delegate=yes' 'KillMode=process' '' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/docker.service
                   fi
-
+                  
                   mkdir -p /etc/docker
                   systemctl daemon-reload
                   systemctl enable docker
@@ -598,14 +598,6 @@ spec:
               value: {{ .Values.services.runner.env.DAEMON_START_TIMEOUT_SEC | default "30" | quote }}
             - name: SANDBOX_START_TIMEOUT_SEC
               value: {{ .Values.services.runner.env.SANDBOX_START_TIMEOUT_SEC | default "60" | quote }}
-            - name: HEALTHCHECK_INTERVAL
-              value: {{ .Values.services.runner.env.HEALTHCHECK_INTERVAL | default "10s" | quote }}
-            - name: HEALTHCHECK_TIMEOUT
-              value: {{ .Values.services.runner.env.HEALTHCHECK_TIMEOUT | default "10s" | quote }}
-            - name: RUNNER_DOMAIN
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
             # Secrets
             - name: DAYTONA_API_URL
               value: {{ .Values.services.runner.env.DAYTONA_API_URL | default "" | quote }}
@@ -648,11 +640,19 @@ spec:
             {{- include "daytona.tplvalues.render" (dict "value" .Values.services.runner.extraEnv "context" $) | nindent 12 }}
             {{- end }}
           volumeMounts:
+            {{- if eq (.Values.services.runner.env.CONTAINER_RUNTIME | default "docker") "docker" }}
+            - name: docker-socket
+              mountPath: /var/run/
+            {{- else }}
+            - name: containerd-socket
+              mountPath: /run/containerd/containerd.sock
+            {{- end }}
             - name: host-root
               mountPath: /host
               readOnly: true
             - name: host-var-lib-docker
               mountPath: /var/lib/docker
+              readOnly: true
             - name: logs
               mountPath: /home/daytona/runner
             - name: ssh-keys
@@ -684,12 +684,22 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
       volumes:
+        - name: docker-socket
+          hostPath:
+            path: /var/run/
+            type: Directory
+        - name: containerd-socket
+          hostPath:
+            path: /run/containerd/containerd.sock
+            type: Socket
         - name: host-root
           hostPath:
             path: /
             type: Directory
         - name: host-var-lib-docker
-          emptyDir: {}
+          hostPath:
+            path: /var/lib/docker
+            type: DirectoryOrCreate
         - name: logs
           hostPath:
             path: /var/log/daytona-runner

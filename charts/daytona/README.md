@@ -75,6 +75,7 @@ graph TB
 
 - Kubernetes 1.19+
 - Helm 3.2.0+
+- At least one worker node labeled `daytona-sandbox-c=true` for the runner DaemonSet to schedule on (see [Kubernetes Runner Autoscaling](#kubernetes-runner-autoscaling-runner--runner-manager) for the full node pool setup).
 
 ## Installing the Chart
 
@@ -650,21 +651,26 @@ After successfully deploying the Daytona platform, you can deploy runners on cle
 kubectl exec $(kubectl get pods -l "app.kubernetes.io/name=daytona,app.kubernetes.io/component=api" -o jsonpath='{.items[0].metadata.name}') -- node dist/apps/api/main.js --create-admin-api-key "runner-admin-key" 2>/dev/null | grep "dtn"
 ```
 
-### 2. Deploy Runner on Linux Host
+### 2. Deploy Runner on Kubernetes (canonical BYOC flow)
+
+Install the `daytona-region` chart against your EKS / AKS / GKE cluster. The chart deploys the runner as a privileged DaemonSet that bootstraps Docker and Sysbox on each node from inside the pod (via `nsenter`). No SSH into nodes, no host scripts.
+
 ```bash
-# Download and run the runner installation script on your target Linux host
-curl -sSL https://download.daytona.io/install.sh | sudo bash
+helm install daytona-region oci://daytonaio/charts/daytona-region \
+  -n daytona --create-namespace \
+  --set regionName=<region> \
+  --set proxyUrl=https://proxy.<your-domain> \
+  --set daytonaApiUrl=https://{{baseDomain}}/api \
+  --set daytonaApiKey=<admin-api-key-from-step-1>
 ```
 
-The installation script will prompt for:
-- **Daytona API URL**: `https://{{baseDomain}}/api` (or your custom domain)
-- **Admin API Key**: Use the key generated in step 1
+See [`charts/daytona-region/QUICKSTART.md`](../daytona-region/QUICKSTART.md) for the end-to-end BYOC walkthrough and [`charts/daytona-region/README.md`](../daytona-region/README.md) for AKS / EKS / GKE-specific values.
 
 ### 3. Runner Features
-- Automatic binary download and installation
-- System service configuration
-- Connection to Daytona API
-- AI workload execution capabilities
+- Privileged DaemonSet that bootstraps Docker + Sysbox via `nsenter` on every cluster node
+- Helm-driven configuration (no host scripts, no SSH)
+- IRSA-friendly AWS credential mode (see `services.runner.aws.credentialMode`)
+- Pluggable insecure-registry mirrors and docker daemon DNS resolvers
 - Resource monitoring and management
 
 ## Kubernetes Runner Autoscaling (Runner & Runner-Manager)

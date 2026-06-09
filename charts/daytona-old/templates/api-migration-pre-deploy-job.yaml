@@ -1,37 +1,22 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: batch/v1
+kind: Job
 metadata:
   namespace: {{ include "daytona.namespace" . }}
-  name: {{ include "daytona.fullname" . }}-api
+  name: {{ include "daytona.fullname" . }}-api-migration-pre-deploy
   labels:
     {{- include "daytona.labels" . | nindent 4 }}
-    app.kubernetes.io/component: api
-  {{- with .Values.services.api.annotations }}
+    app.kubernetes.io/component: api-migration
   annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
-  {{- if not .Values.services.api.autoscaling.enabled }}
-  replicas: {{ .Values.services.api.replicaCount }}
-  {{- end }}
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-  selector:
-    matchLabels:
-      {{- include "daytona.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: api
+  backoffLimit: 3
   template:
     metadata:
-      {{- with .Values.services.api.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
       labels:
         {{- include "daytona.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: api
+        app.kubernetes.io/component: api-migration
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -40,19 +25,42 @@ spec:
       serviceAccountName: {{ include "daytona.serviceAccountName" (dict "Values" .Values "service" "api" "Chart" .Chart "Release" .Release) }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.37
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "Waiting for postgres at ${DB_HOST}:${DB_PORT}..."
+              until nc -z -w 2 "${DB_HOST}" "${DB_PORT}"; do
+                sleep 3
+              done
+              echo "postgres reachable"
+          env:
+            {{- if .Values.postgresql.enabled }}
+            - name: DB_HOST
+              value: {{ printf "%s-postgresql" .Release.Name | quote }}
+            - name: DB_PORT
+              value: "5432"
+            {{- else }}
+            - name: DB_HOST
+              value: {{ .Values.externalDatabase.host | default (.Values.services.api.env.DB_HOST | default "") | quote }}
+            - name: DB_PORT
+              value: {{ .Values.externalDatabase.port | default (.Values.services.api.env.DB_PORT | default "5432") | quote }}
+            {{- end }}
       containers:
-        - name: api
+        - name: migration
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ include "daytona.imageRegistry" (dict "Values" .Values "serviceRegistry" .Values.services.api.image.registry) }}/{{ .Values.services.api.image.repository }}:{{ .Values.services.api.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.services.api.image.pullPolicy }}
-          ports:
-            - name: http
-              containerPort: 3000
-              protocol: TCP
+          command: ["yarn"]
+          args: ["migration:run:pre-deploy"]
           env:
             - name: DEFAULT_RUNNER_NAME
-              value: {{ .Values.services.api.env.DEFAULT_RUNNER_NAME | default "default-runner" | quote }}
+              value: ""
             # Application configuration
             - name: ENVIRONMENT
               value: {{ .Values.services.api.env.ENVIRONMENT | default "production" | quote }}
@@ -152,19 +160,10 @@ spec:
             {{- end }}
             {{- end }}
             # Proxy Configuration
-            # PROXY_DOMAIN intentionally uses bare .baseDomain (no "proxy." prefix).
-            # Sandbox preview URLs are constructed as <port>-<sandboxIdSlice>.<PROXY_DOMAIN>,
-            # so this keeps them at a single subdomain level (e.g. 3000-abc.<base>)
-            # which matches the chart's proxy-ingress wildcard *.<baseDomain> AND the
-            # *.<baseDomain> cert SAN issued by cert-manager. Upstream defaults to
-            # "proxy.<baseDomain>" producing TWO-level URLs that no one-level wildcard
-            # cert/DNS covers — operators hit ERR_CERT_AUTHORITY_INVALID on every preview.
             - name: PROXY_DOMAIN
-              value: {{ .Values.baseDomain | quote }}
+              value: {{ printf "proxy.%s" .Values.baseDomain | quote }}
             - name: PROXY_PROTOCOL
               value: {{ .Values.services.proxy.env.PROXY_PROTOCOL | default "http" | quote }}
-            - name: PROXY_TEMPLATE_URL
-              value: {{ printf "https://{{PORT}}-{{sandboxId}}.%s:443" .Values.baseDomain | quote }}
             {{- if .Values.services.proxy.env.PROXY_API_KEY }}
             - name: PROXY_API_KEY
               value: {{ .Values.services.proxy.env.PROXY_API_KEY | quote }}
@@ -294,18 +293,10 @@ spec:
               value: {{ printf "http://%s-minio:%s" .Release.Name ((.Values.minio.service.port | default 9000) | toString) | quote }}
             - name: S3_STS_ENDPOINT
               value: {{ printf "http://%s-minio:%s/minio/v1/assume-role" .Release.Name ((.Values.minio.service.port | default 9000) | toString) | quote }}
-            - name: S3_REGION
-              value: {{ .Values.services.api.env.S3_REGION | default "us-east-1" | quote }}
             - name: S3_ACCESS_KEY
               value: {{ .Values.minio.rootUser | quote }}
             - name: S3_SECRET_KEY
               value: {{ .Values.minio.rootPassword | quote }}
-            - name: S3_DEFAULT_BUCKET
-              value: {{ .Values.services.api.env.S3_DEFAULT_BUCKET | default "daytona" | quote }}
-            - name: S3_ACCOUNT_ID
-              value: {{ .Values.services.api.env.S3_ACCOUNT_ID | default "" | quote }}
-            - name: S3_ROLE_NAME
-              value: {{ .Values.services.api.env.S3_ROLE_NAME | default "" | quote }}
             {{- else }}
             - name: S3_ENDPOINT
               value: {{ .Values.services.api.env.S3_ENDPOINT | default "" | quote }}
@@ -339,7 +330,7 @@ spec:
               value: {{ .Values.services.api.env.SMTP_EMAIL_FROM | default "noreply@mail.daytona.io" | quote }}
             # APP Configuration
             - name: DEFAULT_SNAPSHOT_IMAGE_NAME
-              value: {{ .Values.services.api.env.DEFAULT_SNAPSHOT_IMAGE_NAME | default "daytonaio/sandbox:0.8.0-slim" | quote }}
+              value: {{ .Values.services.api.env.DEFAULT_SNAPSHOT_IMAGE_NAME | default "daytonaio/sandbox:0.5.1-slim" | quote }}
             - name: DEFAULT_SNAPSHOT_NAME
               value: {{ .Values.services.api.env.DEFAULT_SNAPSHOT_NAME | default "default-snapshot" | quote }}
             - name: DEFAULT_RUNNER_DOMAIN
@@ -353,32 +344,19 @@ spec:
             - name: RUNNER_MANAGER_API_KEY
               value: {{ .Values.services.api.env.RUNNER_MANAGER_API_KEY | quote }}
             {{- end }}
-            {{- $defaultRunnerApiKey := .Values.services.api.env.DEFAULT_RUNNER_API_KEY | default .Values.services.runner.env.API_TOKEN }}
-            {{- if $defaultRunnerApiKey }}
-            - name: DEFAULT_RUNNER_API_KEY
-              value: {{ $defaultRunnerApiKey | quote }}
-            {{- end }}
             {{- if .Values.services.api.extraEnv }}
             {{- include "daytona.tplvalues.render" (dict "value" .Values.services.api.extraEnv "context" $) | nindent 12 }}
             {{- end }}
-          resources:
-            {{- toYaml .Values.services.api.resources | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
             - name: var-run
               mountPath: /var/run
-            {{- if .Values.services.api.extraVolumeMounts }}
-            {{- include "daytona.tplvalues.render" (dict "value" .Values.services.api.extraVolumeMounts "context" $) | nindent 12 }}
-            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
         - name: var-run
           emptyDir: {}
-        {{- if .Values.services.api.extraVolumes }}
-        {{- include "daytona.tplvalues.render" (dict "value" .Values.services.api.extraVolumes "context" $) | nindent 8 }}
-        {{- end }}
       {{- with .Values.services.api.nodeSelector | default .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
