@@ -981,10 +981,8 @@ harbor:
         #multipartcopythresholdsize: "33554432"
   trivy:
     enabled: false
-  # The registry pod is the heaviest Harbor component (~2.6Gi actual on
-  # janus-production) and shipped with no requests/limits. Give it a real
-  # request plus a ceiling so the scheduler accounts for it and it can't
-  # run away.
+  # Harbor ships these subcomponents with no requests/limits. Give the
+  # registry a real request plus a ceiling so the scheduler accounts for it.
   registry:
     registry:
       resources:
