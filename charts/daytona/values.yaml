@@ -981,16 +981,19 @@ harbor:
         #multipartcopythresholdsize: "33554432"
   trivy:
     enabled: false
-  # Harbor ships these subcomponents with no requests/limits. Give the
-  # registry a real request plus a ceiling so the scheduler accounts for it.
+  # Harbor ships these subcomponents with no requests/limits. The registry
+  # process itself is small; most of its cgroup memory is reclaimable page
+  # cache from serving blobs off the filesystem backend. Request enough for
+  # the process and cap the cache so the scheduler accounts for it without
+  # the container appearing to need multiple GiB.
   registry:
     registry:
       resources:
         requests:
           cpu: 100m
-          memory: 512Mi
+          memory: 256Mi
         limits:
-          memory: 3Gi
+          memory: 1Gi
     controller:
       resources:
         requests:
